@@ -1,0 +1,106 @@
+name: Build Android APKs
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    name: Build Debug + Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Generate native Android project (expo prebuild)
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      # ── DEBUG APK ──────────────────────────────────────────────────
+      - name: Build Debug APK
+        run: cd android && ./gradlew assembleDebug --no-daemon
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+      # ── RELEASE APK ────────────────────────────────────────────────
+      # Signed when keystore secrets are present; unsigned otherwise.
+      #
+      # To enable signed builds, add these 4 secrets in:
+      # GitHub repo → Settings → Secrets and variables → Actions
+      #
+      #   KEYSTORE_BASE64  – base64-encoded .keystore file
+      #   STORE_PASSWORD   – keystore password
+      #   KEY_ALIAS        – key alias (e.g. breath-sync)
+      #   KEY_PASSWORD     – key password
+      #
+      # Generate a keystore once on your machine:
+      #   keytool -genkeypair -v -storetype PKCS12 \
+      #     -keystore release.keystore -alias breath-sync \
+      #     -keyalg RSA -keysize 2048 -validity 10000
+      #
+      # Encode it:
+      #   Linux/Mac: base64 -w 0 release.keystore
+      #   Windows:   certutil -encode release.keystore tmp.b64 && findstr /v CERTIFICATE tmp.b64
+      - name: Build Release APK
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASS:   ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS:    ${{ secrets.KEY_ALIAS }}
+          KEY_PASS:     ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "Keystore found — building signed release APK"
+            echo "$KEYSTORE_B64" | base64 --decode > android/app/release.keystore
+            cd android && ./gradlew assembleRelease \
+              -Pandroid.injected.signing.store.file=release.keystore \
+              -Pandroid.injected.signing.store.password="$STORE_PASS" \
+              -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+              -Pandroid.injected.signing.key.password="$KEY_PASS" \
+              --no-daemon
+          else
+            echo "No keystore secrets — building unsigned release APK"
+            cd android && ./gradlew assembleRelease --no-daemon
+          fi
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: android/app/build/outputs/apk/release/
+          retention-days: 30
