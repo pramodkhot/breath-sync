@@ -47,6 +47,11 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
+      # Bundle JS into the debug APK so it runs standalone (no Metro needed)
+      - name: Enable JS bundle in debug builds
+        run: |
+          sed -i 's/^react {/react {\n    bundleInDebug = true/' android/app/build.gradle
+
       # ── DEBUG APK ──────────────────────────────────────────────────
       - name: Build Debug APK
         run: cd android && ./gradlew assembleDebug --no-daemon
